@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Realistic 3D Lotus - Dark Theme</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="icon" href="data:,">
+    
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #020408; /* Deep Dark Background */
+            font-family: 'Segoe UI', sans-serif; 
+            touch-action: manipulation;
+        }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+        #video-input { display: none; transform: scaleX(-1); }
+        
+        #ui-layer {
+            position: absolute; top: 20px; left: 20px;
+            color: rgba(255, 255, 255, 0.9); /* White text for dark background */
+            pointer-events: none; z-index: 10;
+        }
+        h1 { font-weight: 600; font-size: 1.6rem; letter-spacing: 1px; margin: 0; text-transform: uppercase; }
+        p { font-size: 0.9rem; color: rgba(255, 255, 255, 0.7); margin-top: 5px; }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ffffff; 
+            font-size: 1.2rem;
+            background: rgba(0,0,0,0.8); 
+            border: 1px solid #333; 
+            padding: 20px; 
+            border-radius: 8px;
+            transition: opacity 0.5s;
+        }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.154.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.154.0/examples/jsm/"
+        }
+      }
+    </script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>LOTUS</h1>
+    </div>
+    
+    <div id="loading">Loading Vision Models...</div>
+    <video id="video-input"></video>
+    <div id="canvas-container"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        let scene, camera, renderer;
+        let lotusGroup; 
+        let petals = []; 
+        
+        const state = {
+            targetBloom: 0,
+            currentBloom: 0,
+            handPos: { x: 0, y: 0 },
+        };
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x020408); /* Deep Dark Background */
+            scene.fog = new THREE.FogExp2(0x020408, 0.025); 
+
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 3, 8); 
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.outputEncoding = THREE.sRGBEncoding; 
+            renderer.shadowMap.enabled = true; 
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            const mainLight = new THREE.DirectionalLight(0xffdddd, 1.2); 
+            mainLight.position.set(5, 10, 5);
+            mainLight.castShadow = true;
+            mainLight.shadow.mapSize.width = 1024;
+            mainLight.shadow.mapSize.height = 1024;
+            mainLight.shadow.camera.near = 0.5;
+            mainLight.shadow.camera.far = 50;
+            scene.add(mainLight);
+
+            const fillLight = new THREE.PointLight(0x0088ff, 1.0, 15);
+            fillLight.position.set(-5, -2, -5);
+            scene.add(fillLight);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.3)); 
+            
+            const planeGeo = new THREE.PlaneGeometry(100, 100);
+            const planeMat = new THREE.MeshStandardMaterial({ 
+                color: 0x01152c,
+                metalness: 0.8, 
+                roughness: 0.1, 
+            });
+            const groundPlane = new THREE.Mesh(planeGeo, planeMat);
+            groundPlane.rotation.x = -Math.PI / 2;
+            groundPlane.position.y = -0.1;
+            groundPlane.receiveShadow = true;
+            scene.add(groundPlane);
+
+            createRealisticLotus();
+
+            window.addEventListener('resize', onWindowResize);
+        }
+
+        function createRealisticLotus() {
+            lotusGroup = new THREE.Group();
+            lotusGroup.castShadow = true;
+            scene.add(lotusGroup);
+
+            const petalShape = new THREE.Shape();
+            petalShape.moveTo(0, 0);
+            petalShape.bezierCurveTo(1.2, 0.5, 1.5, 2.0, 0, 4.0); 
+            petalShape.bezierCurveTo(-1.5, 2.0, -1.2, 0.5, 0, 0);
+
+            const extrudeSettings = { depth: 0.01, bevelEnabled: true, bevelSegments: 1, steps: 1, bevelSize: 0.01, bevelThickness: 0.01 };
+            let geometry = new THREE.ExtrudeGeometry(petalShape, extrudeSettings);
+            
+            const curveFactor = 0.5;
+            const position = geometry.attributes.position;
+            const newPositions = [];
+            const colors = [];
+            const color1 = new THREE.Color(0xffffff);
+            const color2 = new THREE.Color(0xcc6699); 
+
+            for (let i = 0; i < position.count; i++) {
+                const x = position.getX(i);
+                const y = position.getY(i);
+                const z = position.getZ(i);
+
+                const newZ = z + Math.abs(x) * curveFactor;
+                newPositions.push(x, y, newZ);
+
+                const ratio = y / 4.0; 
+                const color = color2.clone().lerp(color1, ratio);
+                colors.push(color.r, color.g, color.b);
+            }
+            
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            geometry.computeVertexNormals();
+            
+            const material = new THREE.MeshLambertMaterial({
+                vertexColors: true,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.95
+            });
+            material.needsUpdate = true;
+
+
+            const layerConfig = [
+                { count: 5, scale: 0.55, angleOff: 0.0, tiltStart: 0.7, tiltEnd: -0.7, yOffset: 0.6 },
+                { count: 8, scale: 0.75, angleOff: Math.PI / 8, tiltStart: 0.8, tiltEnd: -0.8, yOffset: 0.3 }, 
+                { count: 12, scale: 1.0, angleOff: 0.0, tiltStart: 0.9, tiltEnd: -0.9, yOffset: 0.0 } 
+            ];
+
+            layerConfig.forEach((layer, layerIndex) => {
+                for (let i = 0; i < layer.count; i++) {
+                    const pivot = new THREE.Group();
+                    const angle = (i / layer.count) * Math.PI * 2 + layer.angleOff;
+                    
+                    pivot.rotation.y = angle;
+                    pivot.position.y = layer.yOffset; 
+                    
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.scale.set(layer.scale, layer.scale, layer.scale);
+                    mesh.castShadow = true; 
+                    
+                    mesh.userData = {
+                        initialX: layer.tiltStart, 
+                        openX: layer.tiltEnd,
+                    };
+                    
+                    mesh.rotation.x = mesh.userData.initialX; 
+
+                    pivot.add(mesh);
+                    lotusGroup.add(pivot);
+                    petals.push(mesh);
+                }
+            });
+
+            const podGeo = new THREE.CylinderGeometry(0.5, 0.3, 0.7, 16);
+            const podMat = new THREE.MeshLambertMaterial({ color: 0xffee00 });
+            const pod = new THREE.Mesh(podGeo, podMat);
+            pod.position.y = 0.4;
+            pod.castShadow = true;
+            lotusGroup.add(pod);
+            
+            const seedGeo = new THREE.SphereGeometry(0.08, 8, 8);
+            const seedMat = new THREE.MeshLambertMaterial({ color: 0x443300 });
+            for(let k=0; k<6; k++) {
+                const s = new THREE.Mesh(seedGeo, seedMat);
+                const a = (k/6) * Math.PI * 2;
+                s.position.set(Math.cos(a)*0.25, 0.7, Math.sin(a)*0.25);
+                s.castShadow = true;
+                lotusGroup.add(s);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            state.currentBloom = THREE.MathUtils.lerp(state.currentBloom, state.targetBloom, 0.15);
+
+            petals.forEach(petal => {
+                const target = THREE.MathUtils.lerp(petal.userData.initialX, petal.userData.openX, state.currentBloom);
+                petal.rotation.x = target;
+            });
+
+            const radius = 8;
+            const theta = state.handPos.x * Math.PI * 0.5; 
+            const phi = (0.5 + (state.handPos.y * 0.2)) * Math.PI; 
+
+            const safePhi = THREE.MathUtils.clamp(phi, 0.3, Math.PI / 2);
+
+            const camX = radius * Math.sin(theta) * Math.cos(safePhi);
+            const camY = radius * Math.sin(safePhi) + 1; 
+            const camZ = radius * Math.cos(theta) * Math.cos(safePhi);
+
+            camera.position.x += (camX - camera.position.x) * 0.1;
+            camera.position.y += (camY - camera.position.y) * 0.1;
+            camera.position.z += (camZ - camera.position.z) * 0.1;
+            camera.lookAt(0, 1, 0);
+
+            lotusGroup.rotation.y += 0.001; 
+            
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function initMediaPipe() {
+            const videoElement = document.getElementById('video-input');
+            const loading = document.getElementById('loading');
+
+            if (typeof window.Hands === 'undefined') {
+                loading.innerText = "Error: MediaPipe not loaded. Check internet.";
+                return;
+            }
+            const hands = new window.Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 1, 
+                minDetectionConfidence: 0.7,
+                minTrackingConfidence: 0.7
+            });
+            hands.onResults(onResults);
+            const camera = new window.Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640, 
+                height: 480
+            });
+            camera.start().then(() => {
+                loading.style.display = 'none';
+            }).catch(e => {
+                loading.innerText = "ERROR: Camera Failed.\n1. Check permissions.\n2. You MUST use a secure server (HTTPS or localhost) on mobile.";
+                console.error("Camera startup failed:", e);
+            });
+        }
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const lm = results.multiHandLandmarks[0];
+                const d = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                const rawBloom = THREE.MathUtils.mapLinear(d, 0.04, 0.22, 0, 1);
+                state.targetBloom = THREE.MathUtils.clamp(rawBloom, 0, 1);
+                state.handPos.x = (lm[0].x - 0.5) * 2; 
+                state.handPos.y = -(lm[0].y - 0.5) * 2; 
+            }
+        }
+
+        initThree();
+        animate();
+        setTimeout(initMediaPipe, 100);
+
+    </script>
+</body>
+</html>
